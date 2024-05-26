@@ -178,20 +178,17 @@ sniffer:
       # 可覆盖 sniffer.override-destination
       override-destination: true
   force-domain:
+  ## 强制对此域名进行嗅探
     - +.v2ex.com
-  ## 对嗅探结果进行跳过
   # skip-domain:
   #   - Mijia Cloud
-  # 需要嗅探协议
-  # 已废弃，若 sniffer.sniff 配置则此项无效
-  sniffing:
+  ## 对嗅探结果进行跳过
+  sniffing: # 已废弃，若 sniffer.sniff 配置则此项无效
+  # 需要嗅探的协议
     - tls
     - http
-  # 强制对此域名进行嗅探
-
+  port-whitelist: # 已废弃，若 sniffer.sniff 配置则此项无效
   # 仅对白名单中的端口进行嗅探，默认为 443，80
-  # 已废弃，若 sniffer.sniff 配置则此项无效
-  port-whitelist:
     - "80"
     - "443"
     # - 8000-9999
