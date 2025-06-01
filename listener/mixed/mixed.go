@@ -1,13 +1,20 @@
 package mixed
 
 import (
+	"errors"
 	"net"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
 	N "github.com/metacubex/mihomo/common/net"
+	"github.com/metacubex/mihomo/component/auth"
+	"github.com/metacubex/mihomo/component/ca"
+	"github.com/metacubex/mihomo/component/ech"
+	tlsC "github.com/metacubex/mihomo/component/tls"
 	C "github.com/metacubex/mihomo/constant"
 	authStore "github.com/metacubex/mihomo/listener/auth"
+	LC "github.com/metacubex/mihomo/listener/config"
 	"github.com/metacubex/mihomo/listener/http"
+	"github.com/metacubex/mihomo/listener/reality"
 	"github.com/metacubex/mihomo/listener/socks"
 	"github.com/metacubex/mihomo/transport/socks4"
 	"github.com/metacubex/mihomo/transport/socks5"
@@ -36,6 +43,10 @@ func (l *Listener) Close() error {
 }
 
 func New(addr string, tunnel C.Tunnel, additions ...inbound.Addition) (*Listener, error) {
+	return NewWithConfig(LC.AuthServer{Enable: true, Listen: addr, AuthStore: authStore.Default}, tunnel, additions...)
+}
+
+func NewWithConfig(config LC.AuthServer, tunnel C.Tunnel, additions ...inbound.Addition) (*Listener, error) {
 	isDefault := false
 	if len(additions) == 0 {
 		isDefault = true
@@ -44,14 +55,48 @@ func New(addr string, tunnel C.Tunnel, additions ...inbound.Addition) (*Listener
 			inbound.WithSpecialRules(""),
 		}
 	}
-	l, err := inbound.Listen("tcp", addr)
+
+	l, err := inbound.Listen("tcp", config.Listen)
 	if err != nil {
 		return nil, err
 	}
 
+	tlsConfig := &tlsC.Config{}
+	var realityBuilder *reality.Builder
+
+	if config.Certificate != "" && config.PrivateKey != "" {
+		cert, err := ca.LoadTLSKeyPair(config.Certificate, config.PrivateKey, C.Path)
+		if err != nil {
+			return nil, err
+		}
+		tlsConfig.Certificates = []tlsC.Certificate{tlsC.UCertificate(cert)}
+
+		if config.EchKey != "" {
+			err = ech.LoadECHKey(config.EchKey, tlsConfig, C.Path)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	if config.RealityConfig.PrivateKey != "" {
+		if tlsConfig.Certificates != nil {
+			return nil, errors.New("certificate is unavailable in reality")
+		}
+		realityBuilder, err = config.RealityConfig.Build(tunnel)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if realityBuilder != nil {
+		l = realityBuilder.NewListener(l)
+	} else if len(tlsConfig.Certificates) > 0 {
+		l = tlsC.NewListener(l, tlsConfig)
+	}
+
 	ml := &Listener{
 		listener: l,
-		addr:     addr,
+		addr:     config.Listen,
 	}
 	go func() {
 		for {
@@ -62,22 +107,24 @@ func New(addr string, tunnel C.Tunnel, additions ...inbound.Addition) (*Listener
 				}
 				continue
 			}
-			if isDefault { // only apply on default listener
+			store := config.AuthStore
+			if isDefault || store == authStore.Default { // only apply on default listener
 				if !inbound.IsRemoteAddrDisAllowed(c.RemoteAddr()) {
 					_ = c.Close()
 					continue
 				}
+				if inbound.SkipAuthRemoteAddr(c.RemoteAddr()) {
+					store = authStore.Nil
+				}
 			}
-			go handleConn(c, tunnel, additions...)
+			go handleConn(c, tunnel, store, additions...)
 		}
 	}()
 
 	return ml, nil
 }
 
-func handleConn(conn net.Conn, tunnel C.Tunnel, additions ...inbound.Addition) {
-	N.TCPKeepAlive(conn)
-
+func handleConn(conn net.Conn, tunnel C.Tunnel, store auth.AuthStore, additions ...inbound.Addition) {
 	bufConn := N.NewBufferedConn(conn)
 	head, err := bufConn.Peek(1)
 	if err != nil {
@@ -86,10 +133,10 @@ func handleConn(conn net.Conn, tunnel C.Tunnel, additions ...inbound.Addition) {
 
 	switch head[0] {
 	case socks4.Version:
-		socks.HandleSocks4(bufConn, tunnel, additions...)
+		socks.HandleSocks4(bufConn, tunnel, store, additions...)
 	case socks5.Version:
-		socks.HandleSocks5(bufConn, tunnel, additions...)
+		socks.HandleSocks5(bufConn, tunnel, store, additions...)
 	default:
-		http.HandleConn(bufConn, tunnel, authStore.Authenticator(), additions...)
+		http.HandleConn(bufConn, tunnel, store, additions...)
 	}
 }

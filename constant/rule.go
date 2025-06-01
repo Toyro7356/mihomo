@@ -118,3 +118,8 @@ type Rule interface {
 	ShouldFindProcess() bool
 	ProviderNames() []string
 }
+
+type RuleGroup interface {
+	Rule
+	GetRecodeSize() int
+}

@@ -34,11 +34,12 @@ const RealityMaxShortIDLen = 8
 type RealityConfig struct {
 	PublicKey *ecdh.PublicKey
 	ShortID   [RealityMaxShortIDLen]byte
+
+	SupportX25519MLKEM768 bool
 }
 
-func GetRealityConn(ctx context.Context, conn net.Conn, ClientFingerprint string, tlsConfig *tls.Config, realityConfig *RealityConfig) (net.Conn, error) {
-	retry := 0
-	for fingerprint, exists := GetFingerprint(ClientFingerprint); exists; retry++ {
+func GetRealityConn(ctx context.Context, conn net.Conn, fingerprint UClientHelloID, tlsConfig *Config, realityConfig *RealityConfig) (net.Conn, error) {
+	for retry := 0; ; retry++ {
 		verifier := &realityVerifier{
 			serverName: tlsConfig.ServerName,
 		}
@@ -48,12 +49,12 @@ func GetRealityConn(ctx context.Context, conn net.Conn, ClientFingerprint string
 			SessionTicketsDisabled: true,
 			VerifyPeerCertificate:  verifier.VerifyPeerCertificate,
 		}
-		clientID := utls.ClientHelloID{
-			Client:  fingerprint.Client,
-			Version: fingerprint.Version,
-			Seed:    fingerprint.Seed,
+
+		if !realityConfig.SupportX25519MLKEM768 && fingerprint == HelloChrome_Auto {
+			fingerprint = HelloChrome_120 // old reality server doesn't work with X25519MLKEM768
 		}
-		uConn := utls.UClient(conn, uConfig, clientID)
+
+		uConn := utls.UClient(conn, uConfig, fingerprint)
 		verifier.UConn = uConn
 		err := uConn.BuildHandshakeState()
 		if err != nil {
@@ -75,7 +76,15 @@ func GetRealityConn(ctx context.Context, conn net.Conn, ClientFingerprint string
 
 		//log.Debugln("REALITY hello.sessionId[:16]: %v", hello.SessionId[:16])
 
-		ecdheKey := uConn.HandshakeState.State13.EcdheKey
+		keyShareKeys := uConn.HandshakeState.State13.KeyShareKeys
+		if keyShareKeys == nil {
+			// WTF???
+			if retry > 2 {
+				return nil, errors.New("nil keyShareKeys")
+			}
+			continue // retry
+		}
+		ecdheKey := keyShareKeys.Ecdhe
 		if ecdheKey == nil {
 			// WTF???
 			if retry > 2 {
@@ -115,13 +124,12 @@ func GetRealityConn(ctx context.Context, conn net.Conn, ClientFingerprint string
 		log.Debugln("REALITY Authentication: %v, AEAD: %T", verifier.verified, aeadCipher)
 
 		if !verifier.verified {
-			go realityClientFallback(uConn, uConfig.ServerName, clientID)
+			go realityClientFallback(uConn, uConfig.ServerName, fingerprint)
 			return nil, errors.New("REALITY authentication failed")
 		}
 
 		return uConn, nil
 	}
-	return nil, errors.New("unknown uTLS fingerprint")
 }
 
 func realityClientFallback(uConn net.Conn, serverName string, fingerprint utls.ClientHelloID) {

@@ -13,10 +13,11 @@ import (
 	"time"
 
 	"github.com/metacubex/mihomo/component/ca"
+	tlsC "github.com/metacubex/mihomo/component/tls"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/log"
-	"github.com/metacubex/quic-go"
 
+	"github.com/metacubex/quic-go"
 	D "github.com/miekg/dns"
 )
 
@@ -142,6 +143,10 @@ func (doq *dnsOverQUIC) Close() (err error) {
 	}
 
 	return err
+}
+
+func (doq *dnsOverQUIC) ResetConnection() {
+	doq.closeConnWithError(nil)
 }
 
 // exchangeQUIC attempts to open a QUIC connection, send the DNS message
@@ -334,7 +339,7 @@ func (doq *dnsOverQUIC) openConnection(ctx context.Context) (conn quic.Connectio
 	transport := quic.Transport{Conn: udp}
 	transport.SetCreatedConn(true) // auto close conn
 	transport.SetSingleUse(true)   // auto close transport
-	conn, err = transport.Dial(ctx, &udpAddr, tlsConfig, doq.getQUICConfig())
+	conn, err = transport.Dial(ctx, &udpAddr, tlsC.UConfig(tlsConfig), doq.getQUICConfig())
 	if err != nil {
 		return nil, fmt.Errorf("opening quic connection to %s: %w", doq.addr, err)
 	}

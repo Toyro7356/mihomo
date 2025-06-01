@@ -1,17 +1,23 @@
 package sing_tun
 
 import (
-	"errors"
+	"net"
 	"net/netip"
 
 	"github.com/metacubex/mihomo/component/iface"
 
-	"github.com/sagernet/sing/common/control"
+	"github.com/metacubex/sing/common/control"
 )
 
 type defaultInterfaceFinder struct{}
 
 var DefaultInterfaceFinder control.InterfaceFinder = (*defaultInterfaceFinder)(nil)
+
+func (f *defaultInterfaceFinder) Update() error {
+	iface.FlushCache()
+	_, err := iface.Interfaces()
+	return err
+}
 
 func (f *defaultInterfaceFinder) Interfaces() []control.Interface {
 	ifaces, err := iface.Interfaces()
@@ -26,45 +32,46 @@ func (f *defaultInterfaceFinder) Interfaces() []control.Interface {
 	return interfaces
 }
 
-var errNoSuchInterface = errors.New("no such network interface")
-
-func (f *defaultInterfaceFinder) InterfaceIndexByName(name string) (int, error) {
-	ifaces, err := iface.Interfaces()
-	if err != nil {
-		return 0, err
+func (f *defaultInterfaceFinder) ByName(name string) (*control.Interface, error) {
+	netInterface, err := iface.ResolveInterface(name)
+	if err == nil {
+		return (*control.Interface)(netInterface), nil
 	}
-	for _, netInterface := range ifaces {
-		if netInterface.Name == name {
-			return netInterface.Index, nil
+	if _, err := net.InterfaceByName(name); err == nil {
+		err = f.Update()
+		if err != nil {
+			return nil, err
 		}
+		return f.ByName(name)
 	}
-	return 0, errNoSuchInterface
+	return nil, err
 }
 
-func (f *defaultInterfaceFinder) InterfaceNameByIndex(index int) (string, error) {
-	ifaces, err := iface.Interfaces()
-	if err != nil {
-		return "", err
-	}
-	for _, netInterface := range ifaces {
-		if netInterface.Index == index {
-			return netInterface.Name, nil
-		}
-	}
-	return "", errNoSuchInterface
-}
-
-func (f *defaultInterfaceFinder) InterfaceByAddr(addr netip.Addr) (*control.Interface, error) {
+func (f *defaultInterfaceFinder) ByIndex(index int) (*control.Interface, error) {
 	ifaces, err := iface.Interfaces()
 	if err != nil {
 		return nil, err
 	}
 	for _, netInterface := range ifaces {
-		for _, prefix := range netInterface.Addresses {
-			if prefix.Contains(addr) {
-				return (*control.Interface)(netInterface), nil
-			}
+		if netInterface.Index == index {
+			return (*control.Interface)(netInterface), nil
 		}
 	}
-	return nil, errNoSuchInterface
+	_, err = net.InterfaceByIndex(index)
+	if err == nil {
+		err = f.Update()
+		if err != nil {
+			return nil, err
+		}
+		return f.ByIndex(index)
+	}
+	return nil, iface.ErrIfaceNotFound
+}
+
+func (f *defaultInterfaceFinder) ByAddr(addr netip.Addr) (*control.Interface, error) {
+	netInterface, err := iface.ResolveInterfaceByAddr(addr)
+	if err != nil {
+		return nil, err
+	}
+	return (*control.Interface)(netInterface), nil
 }
